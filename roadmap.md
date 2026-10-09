@@ -1,0 +1,4 @@
+- [ ] Add browser-persisted chat list, routes, migration, and shared facts.
+- [ ] Add WhatsApp-style messages, reactions, presence, and cinematic motion.
+- [ ] Add compressed photo preview, viewing, and real AI image input.
+- [ ] Preserve speech controls and verify mobile, persistence, and live replies.
