@@ -9,7 +9,7 @@ export async function callResponses(body: {
   input: Msg[];
   format?: unknown;
 }) {
-  const key = process.env.LOVABLE_API_KEY;
+  const key = process.env["LOVABLE_API_KEY"];
   if (!key) throw new Error("AI is not configured");
   return fetch(URL_RESPONSES, {
     method: "POST",
