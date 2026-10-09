@@ -9,15 +9,18 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Conversation, ConversationContent, ConversationScrollButton } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { PromptInput, PromptInputTextarea, PromptInputFooter, PromptInputSubmit } from "@/components/ai-elements/prompt-input";
-import { bootstrap, useMira, createChat, updateChat, deleteChat, setActive, sendMessage, textOf, imageOf, reactTo, compressPhoto, notify, type ChatMessage as Msg, type Chat } from "@/lib/mira-store";
+import { LoginScreen } from "@/components/mira/auth-gate";
+import { useAuth } from "@/lib/auth";
+import { bootstrap, attachCloud, detachCloud, useMira, createChat, updateChat, deleteChat, setActive, sendMessage, textOf, imageOf, reactTo, compressPhoto, notify, type ChatMessage as Msg, type Chat } from "@/lib/mira-store";
 
 const time = (n: number) => new Date(n).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 function dateLabel(n: number) { const d = new Date(n); const today = new Date(); if (d.toDateString() === today.toDateString()) return "Today"; today.setDate(today.getDate() - 1); if (d.toDateString() === today.toDateString()) return "Yesterday"; return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }); }
 export function IconButton({ label, children, ...props }: React.ComponentProps<typeof Button> & { label: string }) { return <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" aria-label={label} className="tool-button" {...props}>{children}</Button></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>; }
 export function MiraShell({ children }: { children: React.ReactNode }) {
- const { notice } = useMira(); const [splash, setSplash] = useState(true);
+ const { notice } = useMira(); const [splash, setSplash] = useState(true); const auth = useAuth(); const userId = auth.user?.id;
  useEffect(() => { bootstrap(); const t = setTimeout(() => setSplash(false), 850); return () => clearTimeout(t); }, []);
- return <TooltipProvider><main className="mira-shell">{children}{notice && <div role="alert" className="notice"><span>{notice}</span><IconButton label="Dismiss" onClick={() => notify(null)}><X /></IconButton></div>}{splash && <div className="splash"><img src={mira} alt="Mira" /><h1>Mira<span>♡</span></h1><p>a little closer to you</p></div>}</main></TooltipProvider>;
+ useEffect(() => { if (userId) void attachCloud(userId); else if (auth.status === "signedOut") detachCloud(); }, [userId, auth.status]);
+ return <TooltipProvider><main className="mira-shell">{auth.status === "signedIn" ? children : auth.status === "signedOut" ? <LoginScreen auth={auth} /> : null}{notice && <div role="alert" className="notice"><span>{notice}</span><IconButton label="Dismiss" onClick={() => notify(null)}><X /></IconButton></div>}{splash && <div className="splash"><img src={mira} alt="Mira" /><h1>Mira<span>♡</span></h1><p>a little closer to you</p></div>}</main></TooltipProvider>;
 }
 function ChatMenu({ chat }: { chat: Chat }) {
  const { runs } = useMira(); const [rename, setRename] = useState(false); const [title, setTitle] = useState(chat.title);

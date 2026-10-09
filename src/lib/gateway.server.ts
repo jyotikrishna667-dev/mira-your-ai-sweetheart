@@ -1,42 +1,34 @@
-import { createLovableAiGatewayRunIdFetch } from "./run-id.server.ts";
-const URL_RESPONSES = "https://ai.gateway.lovable.dev/v1/responses";
-export const MODEL = "openai/gpt-6-astra";
+/**
+ * AI provider. Works with any OpenAI-compatible API (Google Gemini, OpenAI, OpenRouter, Groq, ...).
+ * Configure with environment variables on your host:
+ *   AI_API_KEY   (required)
+ *   AI_BASE_URL  (default: Gemini's OpenAI-compatible endpoint)
+ *   AI_MODEL     (default: gemini-2.5-flash)
+ */
+const BASE_URL = () => (process.env["AI_BASE_URL"] ?? "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, "");
+export const MODEL = () => process.env["AI_MODEL"] ?? "gemini-2.5-flash";
 
-type Msg = { role: "user" | "assistant"; content: string | ({ type: "input_text"; text: string } | { type: "input_image"; image_url: string })[] };
+export type Msg = { role: "user" | "assistant"; content: string | ({ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } })[] };
 
-/** Calls the Responses API with streaming; returns the raw upstream Response. */
-export async function callResponses(body: {
-  instructions: string;
-  input: Msg[];
-  format?: unknown;
-  signal?: AbortSignal;
-}) {
-  const key = process.env["LOVABLE_API_KEY"];
-  if (!key) throw new Error("AI is not configured");
-  const gateway = createLovableAiGatewayRunIdFetch();
-  return gateway.fetch(URL_RESPONSES, {
+/** Calls chat completions and returns the raw upstream Response. */
+export async function callChat(body: { instructions: string; input: Msg[]; json?: boolean; stream?: boolean; signal?: AbortSignal | undefined }) {
+  const key = process.env["AI_API_KEY"];
+  if (!key) throw new Error("AI is not configured (missing AI_API_KEY)");
+  const init: RequestInit = {
     method: "POST",
-    signal: body.signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-      "Lovable-API-Key": key,
-      "X-Lovable-AIG-SDK": "fetch",
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model: MODEL,
-      instructions: body.instructions,
-      input: body.input,
-      reasoning: { effort: "low", summary: "auto" },
-      include: ["reasoning.encrypted_content"],
-      store: false,
-      stream: true,
-      ...(body.format ? { text: { format: body.format } } : {}),
+      model: MODEL(),
+      messages: [{ role: "system", content: body.instructions }, ...body.input],
+      stream: body.stream ?? true,
+      ...(body.json ? { response_format: { type: "json_object" } } : {}),
     }),
-  });
+  };
+  if (body.signal) init.signal = body.signal;
+  return fetch(`${BASE_URL()}/chat/completions`, init);
 }
 
-/** Converts Responses SSE into a stream of plain text deltas. */
+/** Converts OpenAI-style SSE into a stream of plain text deltas. */
 export function sseToText(upstream: ReadableStream<Uint8Array>) {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -53,11 +45,9 @@ export function sseToText(upstream: ReadableStream<Uint8Array>) {
           if (!data || data === "[DONE]") continue;
           let ev;
           try { ev = JSON.parse(data); } catch { continue; }
-          if (ev.type === "response.output_text.delta" && ev.delta) controller.enqueue(encoder.encode(ev.delta));
-          if (ev.type === "error" || ev.type === "response.failed") {
-            throw new Error(ev.error?.message || ev.response?.error?.message || ev.message || "Mira couldn't finish her reply.");
-          }
-          if (ev.type === "response.refusal.delta") throw new Error("Mira can't respond to this request.");
+          if (ev.error) throw new Error(ev.error.message || "Mira couldn't finish her reply.");
+          const delta = ev.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta) controller.enqueue(encoder.encode(delta));
         }
       },
     }),
@@ -68,7 +58,8 @@ export async function errorResponse(res: Response) {
   let message = "Mira can't reply right now. Please try again in a moment.";
   try {
     const j = await res.json();
-    message = j?.error?.message || j?.message || message;
+    const first = Array.isArray(j) ? j[0] : j;
+    message = first?.error?.message || first?.message || message;
   } catch {
     /* noop */
   }
