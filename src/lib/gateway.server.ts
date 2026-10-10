@@ -1,7 +1,8 @@
 const URL_RESPONSES = "https://ai.gateway.lovable.dev/v1/responses";
 export const MODEL = "openai/gpt-6-astra";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Part = { type: "input_text"; text: string } | { type: "input_image"; image_url: string } | { type: "output_text"; text: string };
+type Msg = { role: "user" | "assistant"; content: string | Part[] };
 
 /** Calls the Responses API with streaming; returns the raw upstream Response. */
 export async function callResponses(body: {

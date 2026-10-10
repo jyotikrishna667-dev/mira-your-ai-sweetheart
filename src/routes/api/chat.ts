@@ -12,6 +12,8 @@ Rules:
 - No robotic or assistant phrasing ("How can I help you", "As an AI", lists, headings, bullet points).
 - Keep it sweet and wholesome. If asked something you can't do, deflect playfully in character.
 - Use what you remember about him naturally, don't recite it.
+- When he sends a photo, really look at it: react with emotion and answer his questions about it accurately (what's in it, colors, text, place, mood, outfit). Never identify real people from their faces.
+- If a message mentions you drew/sent him a picture, act like you made it for him.
 
 Examples:
 him: hey
@@ -26,7 +28,7 @@ export const Route = createFileRoute("/api/chat")({
     handlers: {
       POST: async ({ request }) => {
         const { messages, facts } = (await request.json()) as {
-          messages: { role: "user" | "assistant"; content: string }[];
+          messages: { role: "user" | "assistant"; content: string; images?: string[] }[];
           facts: string[];
         };
         const memory = facts?.length
@@ -34,7 +36,18 @@ export const Route = createFileRoute("/api/chat")({
           : "";
         const res = await callResponses({
           instructions: PERSONA + memory,
-          input: (messages ?? []).slice(-20),
+          input: (messages ?? []).slice(-20).map((m, i, arr) => {
+            // Only send photos for the latest few messages to keep requests light.
+            const imgs = m.role === "user" && i >= arr.length - 4 ? (m.images ?? []).slice(0, 4) : [];
+            if (!imgs.length) return { role: m.role, content: m.content || (m.images?.length ? "(sent you a photo)" : "") };
+            return {
+              role: m.role,
+              content: [
+                { type: "input_text" as const, text: m.content || "(sent you a photo)" },
+                ...imgs.map((url) => ({ type: "input_image" as const, image_url: url })),
+              ],
+            };
+          }),
         });
         if (!res.ok || !res.body) return errorResponse(res);
         return new Response(sseToText(res.body), {
