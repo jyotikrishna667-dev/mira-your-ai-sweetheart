@@ -1,34 +1,37 @@
-/**
- * AI provider. Works with any OpenAI-compatible API (Google Gemini, OpenAI, OpenRouter, Groq, ...).
- * Configure with environment variables on your host:
- *   AI_API_KEY   (required)
- *   AI_BASE_URL  (default: Gemini's OpenAI-compatible endpoint)
- *   AI_MODEL     (default: gemini-2.5-flash)
- */
-const BASE_URL = () => (process.env["AI_BASE_URL"] ?? "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, "");
-export const MODEL = () => process.env["AI_MODEL"] ?? "gemini-2.5-flash";
+const URL_RESPONSES = "https://ai.gateway.lovable.dev/v1/responses";
+export const MODEL = "openai/gpt-6-astra";
 
-export type Msg = { role: "user" | "assistant"; content: string | ({ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } })[] };
+type Msg = { role: "user" | "assistant"; content: string };
 
-/** Calls chat completions and returns the raw upstream Response. */
-export async function callChat(body: { instructions: string; input: Msg[]; json?: boolean; stream?: boolean; signal?: AbortSignal | undefined }) {
-  const key = process.env["AI_API_KEY"];
-  if (!key) throw new Error("AI is not configured (missing AI_API_KEY)");
-  const init: RequestInit = {
+/** Calls the Responses API with streaming; returns the raw upstream Response. */
+export async function callResponses(body: {
+  instructions: string;
+  input: Msg[];
+  format?: unknown;
+}) {
+  const key = process.env["LOVABLE_API_KEY"];
+  if (!key) throw new Error("AI is not configured");
+  return fetch(URL_RESPONSES, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+      "Lovable-API-Key": key,
+      "X-Lovable-AIG-SDK": "fetch",
+    },
     body: JSON.stringify({
-      model: MODEL(),
-      messages: [{ role: "system", content: body.instructions }, ...body.input],
-      stream: body.stream ?? true,
-      ...(body.json ? { response_format: { type: "json_object" } } : {}),
+      model: MODEL,
+      instructions: body.instructions,
+      input: body.input,
+      reasoning: { effort: "low" },
+      store: false,
+      stream: true,
+      ...(body.format ? { text: { format: body.format } } : {}),
     }),
-  };
-  if (body.signal) init.signal = body.signal;
-  return fetch(`${BASE_URL()}/chat/completions`, init);
+  });
 }
 
-/** Converts OpenAI-style SSE into a stream of plain text deltas. */
+/** Converts Responses SSE into a stream of plain text deltas. */
 export function sseToText(upstream: ReadableStream<Uint8Array>) {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -43,11 +46,14 @@ export function sseToText(upstream: ReadableStream<Uint8Array>) {
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (!data || data === "[DONE]") continue;
-          let ev;
-          try { ev = JSON.parse(data); } catch { continue; }
-          if (ev.error) throw new Error(ev.error.message || "Mira couldn't finish her reply.");
-          const delta = ev.choices?.[0]?.delta?.content;
-          if (typeof delta === "string" && delta) controller.enqueue(encoder.encode(delta));
+          try {
+            const ev = JSON.parse(data);
+            if (ev.type === "response.output_text.delta" && ev.delta) {
+              controller.enqueue(encoder.encode(ev.delta));
+            }
+          } catch {
+            /* ignore partial */
+          }
         }
       },
     }),
@@ -58,11 +64,11 @@ export async function errorResponse(res: Response) {
   let message = "Mira can't reply right now. Please try again in a moment.";
   try {
     const j = await res.json();
-    const first = Array.isArray(j) ? j[0] : j;
-    message = first?.error?.message || first?.message || message;
+    message = j?.error?.message || j?.message || message;
   } catch {
     /* noop */
   }
+  if (res.status === 402) message = "AI credits ran out. Please add credits to keep chatting.";
   if (res.status === 429) message = "Too many messages at once — wait a few seconds and try again.";
   return Response.json({ error: message }, { status: res.status });
 }
