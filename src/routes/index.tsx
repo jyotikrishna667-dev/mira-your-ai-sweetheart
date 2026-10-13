@@ -87,7 +87,7 @@ function ChatPage() {
       if (!list.length) list = [newChat()];
       const sorted = [...list].sort((a, b) => b.updatedAt - a.updatedAt);
       setChats(list);
-      setActiveId(sorted[0].id);
+      setActiveId(sorted[0]!.id);
       setLoaded(true);
     })();
     if ("speechSynthesis" in window) window.speechSynthesis.getVoices();
@@ -349,7 +349,7 @@ function ChatPage() {
     const rest = chats.filter((x) => x.id !== c.id);
     const next = rest.length ? rest : [newChat()];
     setChats(next);
-    if (c.id === activeId) setActiveId([...next].sort((a, b) => b.updatedAt - a.updatedAt)[0].id);
+    if (c.id === activeId) setActiveId([...next].sort((a, b) => b.updatedAt - a.updatedAt)[0]!.id);
   };
 
   const groups = useMemo(() => {
