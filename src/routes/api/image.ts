@@ -8,18 +8,34 @@ export const Route = createFileRoute("/api/image")({
       POST: async ({ request }) => {
         const key = process.env["LOVABLE_API_KEY"];
         if (!key) return Response.json({ error: "Image making isn't set up yet." }, { status: 500 });
-        const { prompt } = (await request.json()) as { prompt?: string };
+        const { prompt, refs } = (await request.json()) as { prompt?: string; refs?: string[] };
         if (!prompt?.trim()) return Response.json({ error: "Tell me what to draw 🥺" }, { status: 400 });
-        const res = await fetch("https://ai.gateway.lovable.dev/v1/images/generations", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Lovable-API-Key": key,
-            "X-Lovable-AIG-SDK": "fetch",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ model: MODEL, prompt: prompt.slice(0, 2000), stream: true, partial_images: 1 }),
-        });
+        const auth = { Authorization: `Bearer ${key}`, "Lovable-API-Key": key, "X-Lovable-AIG-SDK": "fetch" };
+        const references = (refs ?? []).filter((r) => r.startsWith("data:image/")).slice(0, 3);
+        let res: Response;
+        if (references.length) {
+          // Reference images keep Mira and her room consistent.
+          const form = new FormData();
+          form.set("model", MODEL);
+          form.set("prompt", prompt.slice(0, 3000));
+          form.set("stream", "true");
+          form.set("partial_images", "1");
+          references.forEach((d, i) => {
+            const [head, b64] = d.split(",");
+            const type = head?.match(/data:(.*?);/)?.[1] ?? "image/jpeg";
+            const bin = atob(b64 ?? "");
+            const bytes = new Uint8Array(bin.length);
+            for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+            form.append("image[]", new File([bytes], `ref${i}.jpg`, { type }));
+          });
+          res = await fetch("https://ai.gateway.lovable.dev/v1/images/edits", { method: "POST", headers: auth, body: form });
+        } else {
+          res = await fetch("https://ai.gateway.lovable.dev/v1/images/generations", {
+            method: "POST",
+            headers: { ...auth, "Content-Type": "application/json" },
+            body: JSON.stringify({ model: MODEL, prompt: prompt.slice(0, 3000), stream: true, partial_images: 1 }),
+          });
+        }
         if (!res.ok || !res.body) {
           let message = "I couldn't make that picture right now 🥺";
           try {
