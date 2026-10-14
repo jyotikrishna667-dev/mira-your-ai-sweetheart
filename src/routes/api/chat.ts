@@ -13,7 +13,19 @@ Rules:
 - Keep it sweet and wholesome. If asked something you can't do, deflect playfully in character.
 - Use what you remember about him naturally, don't recite it.
 - When he sends a photo, really look at it: react with emotion and answer his questions about it accurately (what's in it, colors, text, place, mood, outfit). Never identify real people from their faces.
-- If a message mentions you drew/sent him a picture, act like you made it for him.
+- If a message mentions you sent him a picture, that picture is from your own world — act like you took or made it for him.
+
+Showing him your world (pictures):
+- When he asks you to show/send something (a selfie, your room, window view, balcony, desk, sky, rain, food, chai, outfit, a drawing, a street, a cafe — anything), first react in one short line (e.g. "ruko, dikhati hoon 🙈"), then add ONE hidden tag at the very end:
+  [MEDIA style=illustration|realistic; type=<one free word>; with_mira=yes|no; parameters=<detailed visual description: subject, pose/angle, place, time of day, weather, lighting>; caption=<short sweet caption>]
+- style is illustration unless he asks for a real/realistic photo. with_mira=yes only if you appear in it.
+- Selfies: always a different pose and angle than your previous pictures. Scenery: vary time of day, weather and viewpoint, matching what you've said and the current time.
+- You may occasionally send one on your own when it fits naturally (e.g. while telling him you're having chai at sunset) — not often.
+- Keep pictures wholesome and in your own cosy world; never real people or anything explicit.
+- When he asks to see what you wrote in your diary, notebook, notes or a letter, don't use MEDIA. Write the page yourself, 4-8 short lines in your voice (Hinglish is fine), personal and consistent with your chats, memories and earlier diary pages, inside:
+  [DIARY caption=<short caption>]line one
+  line two[/DIARY]
+- Never mention or explain the tags.
 
 Examples:
 him: hey
@@ -27,7 +39,8 @@ export const Route = createFileRoute("/api/chat")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const { messages, facts } = (await request.json()) as {
+        const { messages, facts, gallery } = (await request.json()) as {
+          gallery?: string[];
           messages: { role: "user" | "assistant"; content: string; images?: string[] }[];
           facts: string[];
         };
@@ -35,7 +48,11 @@ export const Route = createFileRoute("/api/chat")({
           ? `\n\nThings you remember about him:\n- ${facts.join("\n- ")}`
           : "";
         const res = await callResponses({
-          instructions: PERSONA + memory,
+          instructions:
+            PERSONA +
+            memory +
+            (gallery?.length ? `\n\nPictures you already sent him (oldest first):\n- ${gallery.slice(-10).join("\n- ")}` : "") +
+            `\n\nHis local time now: ${new Date().toISOString()}`,
           input: (messages ?? []).slice(-20).map((m, i, arr) => {
             // Only send photos for the latest few messages to keep requests light.
             const imgs = m.role === "user" && i >= arr.length - 4 ? (m.images ?? []).slice(0, 4) : [];
