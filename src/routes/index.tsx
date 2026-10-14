@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Mic, Send, Trash2, Volume2, Square, Menu, Plus, Search, Pin, PinOff, Pencil, X, Paperclip, Download, ImageIcon,
+  Mic, Send, Trash2, Volume2, Square, Menu, Plus, Search, Pin, PinOff, Pencil, X, Paperclip, Download, ImageIcon, Copy,
 } from "lucide-react";
 import mira from "@/assets/mira.jpg";
 import { type Chat, type Msg, compressImage, groupLabel, loadChats, saveChats, wantsImage } from "@/lib/chat-store";
@@ -57,6 +57,13 @@ function ChatPage() {
   const [sidebar, setSidebar] = useState(false);
   const [query, setQuery] = useState("");
   const [viewer, setViewer] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ m: Msg; rect: DOMRect } | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<{ c: Chat; step: "menu" | "confirm" } | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const pressTimer = useRef<number | null>(null);
+  const suppressClick = useRef(false);
   const recRef = useRef<any>(null);
   const baseTextRef = useRef("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -72,7 +79,7 @@ function ChatPage() {
       try {
         list = (await loadChats()) ?? [];
       } catch {
-        setNotice("Couldn't open saved chats in this browser 🥺");
+        setLoadFailed(true);
       }
       try {
         // Move the original single chat into the history once.
@@ -98,9 +105,9 @@ function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
-    saveChats(chats).catch(() => setNotice("Storage is full — delete some old chats to keep saving 🥺"));
-  }, [chats, loaded]);
+    if (!loaded || loadFailed) return; // never overwrite saved chats we couldn't read
+    saveChats(chats).then(() => setSaveFailed(false), () => setSaveFailed(true));
+  }, [chats, loaded, loadFailed]);
   useEffect(() => {
     if (loaded) localStorage.setItem(FACTS_KEY, JSON.stringify(facts));
   }, [facts, loaded]);
@@ -344,8 +351,65 @@ function ChatPage() {
     if (t) setChats((cs) => cs.map((x) => (x.id === c.id ? { ...x, title: t.slice(0, 60) } : x)));
   };
   const togglePin = (c: Chat) => setChats((cs) => cs.map((x) => (x.id === c.id ? { ...x, pinned: !x.pinned } : x)));
+  const clearPress = () => {
+    if (pressTimer.current) window.clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  };
+  const longPress = (fire: (el: HTMLElement) => void) => ({
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+      const el = e.currentTarget;
+      clearPress();
+      pressTimer.current = window.setTimeout(() => {
+        suppressClick.current = true;
+        navigator.vibrate?.(15);
+        fire(el);
+      }, 480);
+    },
+    onPointerUp: clearPress,
+    onPointerLeave: clearPress,
+    onPointerCancel: clearPress,
+    onContextMenu: (e: React.MouseEvent<HTMLElement>) => {
+      e.preventDefault();
+      clearPress();
+      fire(e.currentTarget);
+    },
+    onClickCapture: (e: React.MouseEvent) => {
+      if (suppressClick.current) {
+        suppressClick.current = false;
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    },
+  });
+  const openMsgMenu = (m: Msg, el: HTMLElement) => {
+    const b = el.querySelector("[data-bubble]") ?? el;
+    setMenu({ m, rect: b.getBoundingClientRect() });
+  };
+  const copyMsg = async (m: Msg) => {
+    setMenu(null);
+    if (!m.content) return setNotice("Nothing to copy here 💕");
+    try {
+      await navigator.clipboard.writeText(m.content);
+      setNotice("Copied 💕");
+    } catch {
+      setNotice("Couldn't copy that — try again?");
+    }
+  };
+  const unsend = (m: Msg) => {
+    setMenu(null);
+    if (busy) return setNotice("Wait till Mira finishes, then try again 💕");
+    if (speakingId === m.id) stopAudio();
+    const chatId = activeId;
+    setRemovingId(m.id);
+    window.setTimeout(() => {
+      setChats((cs) => cs.map((c) => (c.id === chatId ? { ...c, messages: c.messages.filter((x) => x.id !== m.id) } : c)));
+      setRemovingId(null);
+    }, 280);
+  };
   const deleteChat = (c: Chat) => {
-    if (busy || !confirm(`Delete "${c.title}"?`)) return;
+    setSheet(null);
+    if (busy) return setNotice("Wait till Mira finishes, then try again 💕");
+    if (c.id === activeId) stopAudio();
     const rest = chats.filter((x) => x.id !== c.id);
     const next = rest.length ? rest : [newChat()];
     setChats(next);
@@ -406,7 +470,9 @@ function ChatPage() {
             {g.items.map((c) => (
               <div
                 key={c.id}
-                className={`group flex items-center gap-1 rounded-lg pr-1 transition ${c.id === activeId ? "bg-secondary" : "hover:bg-muted"}`}
+                {...longPress(() => setSheet({ c, step: "menu" }))}
+                style={{ WebkitTouchCallout: "none" }}
+                className={`group flex select-none items-center gap-1 rounded-lg pr-1 transition ${c.id === activeId ? "bg-secondary" : "hover:bg-muted"}`}
               >
                 <button onClick={() => openChat(c.id)} className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm">
                   {c.pinned && <Pin className="mr-1 inline h-3 w-3 text-primary" />}
@@ -419,7 +485,7 @@ function ChatPage() {
                   <button onClick={() => renameChat(c)} aria-label="Rename" className="rounded p-1.5 text-muted-foreground hover:text-foreground">
                     <Pencil className="h-3.5 w-3.5" />
                   </button>
-                  <button onClick={() => deleteChat(c)} aria-label="Delete" className="rounded p-1.5 text-muted-foreground hover:text-destructive">
+                  <button onClick={() => setSheet({ c, step: "confirm" })} aria-label="Delete" className="rounded p-1.5 text-muted-foreground hover:text-destructive">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -430,6 +496,11 @@ function ChatPage() {
       </nav>
     </aside>
   );
+
+  const rowCls = (m: Msg, base: string) =>
+    `${base} select-none transition-all duration-300 ${
+      removingId === m.id ? "scale-95 opacity-0" : menu?.m.id === m.id ? "relative z-50 -translate-y-1 scale-[1.03]" : ""
+    }`;
 
   const Imgs = ({ list }: { list: string[] }) => (
     <div className={`grid gap-1 ${list.length > 1 ? "grid-cols-2" : ""}`}>
@@ -489,16 +560,16 @@ function ChatPage() {
             )}
             {messages.map((m) =>
               m.role === "user" ? (
-                <div key={m.id} className="flex justify-end">
-                  <div className="max-w-[80%] space-y-1 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-romance px-4 py-2 text-[15px] text-primary-foreground shadow-md">
+                <div key={m.id} {...longPress((el) => openMsgMenu(m, el))} style={{ WebkitTouchCallout: "none" }} className={rowCls(m, "flex justify-end")}>
+                  <div data-bubble className="max-w-[80%] space-y-1 whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-romance px-4 py-2 text-[15px] text-primary-foreground shadow-md">
                     {m.images?.length ? <div className="-mx-2 pt-0.5"><Imgs list={m.images} /></div> : null}
                     {m.content && <div>{m.content}</div>}
                   </div>
                 </div>
               ) : (
-                <div key={m.id} className="flex items-end gap-2">
+                <div key={m.id} {...longPress((el) => openMsgMenu(m, el))} style={{ WebkitTouchCallout: "none" }} className={rowCls(m, "flex items-end gap-2")}>
                   <img src={mira} alt="" width={28} height={28} loading="lazy" className="h-7 w-7 shrink-0 rounded-full object-cover" />
-                  <div className="max-w-[78%] space-y-1 whitespace-pre-wrap break-words rounded-2xl rounded-bl-md bg-bubble-her px-4 py-2 text-[15px] shadow-md">
+                  <div data-bubble className="max-w-[78%] space-y-1 whitespace-pre-wrap break-words rounded-2xl rounded-bl-md bg-bubble-her px-4 py-2 text-[15px] shadow-md">
                     {m.images?.length ? (
                       <div className="-mx-2 pt-0.5">
                         <Imgs list={m.images} />
@@ -549,6 +620,23 @@ function ChatPage() {
           </div>
         </div>
 
+        {(saveFailed || loadFailed) && (
+          <div role="alert" className="mx-auto mb-2 flex max-w-sm items-center gap-3 rounded-xl bg-destructive/15 px-4 py-2 text-sm text-destructive shadow-lg">
+            <span className="flex-1">
+              {loadFailed ? "Couldn't open your saved chats 🥺" : "Couldn't save your latest change 🥺"}
+            </span>
+            <button
+              onClick={() =>
+                loadFailed
+                  ? window.location.reload()
+                  : saveChats(chats).then(() => setSaveFailed(false), () => setNotice("Still couldn't save — free up some space?"))
+              }
+              className="rounded-full bg-destructive px-3 py-1 text-xs font-semibold text-primary-foreground"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         {notice && (
           <div className="mx-auto mb-2 max-w-sm rounded-xl bg-secondary px-4 py-2 text-center text-sm text-secondary-foreground shadow-lg">{notice}</div>
         )}
@@ -635,6 +723,61 @@ function ChatPage() {
             </button>
           </div>
           <img src={viewer} alt="Full size" className="m-auto max-h-[85dvh] max-w-full rounded-xl object-contain" onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
+      {menu && (() => {
+        const W = 184, H = 104, vw = window.innerWidth, vh = window.innerHeight, r0 = menu.rect;
+        let top = r0.bottom + 8 + H <= vh - 8 ? r0.bottom + 8 : r0.top - H - 8;
+        top = Math.min(Math.max(8, top), vh - H - 8);
+        const left = Math.min(Math.max(8, menu.m.role === "user" ? r0.right - W : r0.left), vw - W - 8);
+        return (
+          <>
+            <button aria-label="Close menu" className="fixed inset-0 z-40 bg-background/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setMenu(null)} />
+            <div
+              role="menu"
+              style={{ top, left, width: W }}
+              className="fixed z-50 overflow-hidden rounded-2xl border border-border bg-card shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+            >
+              <button role="menuitem" onClick={() => void copyMsg(menu.m)} className="flex w-full items-center justify-between px-4 py-3 text-sm hover:bg-muted">
+                Copy <Copy className="h-4 w-4 text-muted-foreground" />
+              </button>
+              <div className="h-px bg-border" />
+              <button role="menuitem" onClick={() => unsend(menu.m)} className="flex w-full items-center justify-between px-4 py-3 text-sm text-destructive hover:bg-muted">
+                Unsend <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          </>
+        );
+      })()}
+
+      {sheet && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <button aria-label="Close" className="absolute inset-0 bg-background/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setSheet(null)} />
+          <div
+            key={sheet.step}
+            className="relative mx-auto w-full max-w-md rounded-t-3xl border border-border bg-card px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl animate-in slide-in-from-bottom duration-300"
+          >
+            <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-muted" />
+            {sheet.step === "menu" ? (
+              <>
+                <p className="truncate px-2 pb-3 text-center font-display text-base">{sheet.c.title}</p>
+                <button onClick={() => setSheet({ ...sheet, step: "confirm" })} className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-destructive hover:bg-muted">
+                  <Trash2 className="h-4 w-4" /> Delete chat
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="px-2 text-center font-display text-lg">Delete chat?</p>
+                <p className="px-2 pb-3 pt-1 text-center text-sm text-muted-foreground">This permanently removes the whole conversation.</p>
+                <button onClick={() => deleteChat(sheet.c)} className="w-full rounded-xl bg-destructive py-3 text-sm font-semibold text-primary-foreground">
+                  Delete
+                </button>
+              </>
+            )}
+            <button onClick={() => setSheet(null)} className="mt-2 w-full rounded-xl bg-secondary py-3 text-sm font-semibold text-secondary-foreground">
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>
