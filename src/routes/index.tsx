@@ -221,7 +221,7 @@ function ChatPage() {
       if (prev && !/selfie/i.test(job.kind)) {
         setChatMessages(chatId, (m) => [
           ...m,
-          { id: uid(), role: "assistant", content: job.caption, images: prev.images, generated: true, media: prev.media },
+          { id: uid(), role: "assistant", content: job.caption, images: prev.images!, generated: true, media: prev.media! },
         ]);
         return;
       }
