@@ -185,7 +185,7 @@ export async function renderDiary(lines: string[]): Promise<string> {
   g.fillStyle = "#ec6f95"; g.font = "64px serif"; g.fillText("♡", pw / 2 - 110, ph / 2 - 50);
   g.restore();
   // pen corner
-  g.save(); g.translate(60, H - 80); g.rotate(-0.6);
+  g.save(); g.translate(20, H - 30); g.rotate(-0.2);
   g.fillStyle = "#b07ad6"; g.fillRect(0, 0, 300, 26);
   g.fillStyle = "#e8d6f5"; g.fillRect(300, 4, 30, 18);
   g.restore();
