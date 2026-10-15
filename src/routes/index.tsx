@@ -4,7 +4,11 @@ import {
   Mic, Send, Trash2, Volume2, Square, Menu, Plus, Search, Pin, PinOff, Pencil, X, Paperclip, Download, ImageIcon, Copy,
 } from "lucide-react";
 import mira from "@/assets/mira.jpg";
-import { type Chat, type Msg, compressImage, groupLabel, loadChats, saveChats, wantsImage } from "@/lib/chat-store";
+import {
+  type Chat, type Msg, type MediaJob, type DiaryJob, compressImage, groupLabel, loadChats, saveChats,
+  cleanReply, parseTags, renderDiary, getWorldRef, setWorldRef, ROOMISH, quotaLeft, spendQuota,
+} from "@/lib/chat-store";
+import { MAX_ASSETS_PER_24H } from "@/lib/mira-config";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -57,6 +61,7 @@ function ChatPage() {
   const [sidebar, setSidebar] = useState(false);
   const [query, setQuery] = useState("");
   const [viewer, setViewer] = useState<string | null>(null);
+  const [mediaRetry, setMediaRetry] = useState<{ chatId: string; job: MediaJob } | null>(null);
   const [menu, setMenu] = useState<{ m: Msg; rect: DOMRect } | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [sheet, setSheet] = useState<{ c: Chat; step: "menu" | "confirm" } | null>(null);
@@ -144,16 +149,26 @@ function ChatPage() {
   const streamReply = async (chatId: string, history: Msg[], extraNote?: string) => {
     const replyId = uid();
     let reply = "";
-    const payload = history.slice(-20).map(({ role, content, images, generated }) => ({
+    const payload = history.slice(-20).map(({ role, content, images, generated, media }) => ({
       role,
-      content: generated ? `${content}\n(I drew and sent him a picture)` : content,
+      content: media
+        ? `${content}\n(sent him a ${media.kind} picture: ${media.kind === "diary" ? media.desc : media.desc.slice(0, 200)})`
+        : generated ? `${content}\n(sent him a picture)` : content,
       images: role === "user" ? images : undefined,
     }));
     if (extraNote) payload.push({ role: "user", content: extraNote, images: undefined });
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: payload, facts }),
+      body: JSON.stringify({
+        messages: payload,
+        facts,
+        gallery: chats
+          .flatMap((c) => c.messages)
+          .filter((x) => x.media)
+          .slice(-10)
+          .map((x) => `${x.media!.kind} (${x.media!.style}): ${x.media!.desc.slice(0, 220)}`),
+      }),
     });
     if (!res.ok || !res.body) {
       const j = await res.json().catch(() => ({}));
@@ -165,7 +180,7 @@ function ChatPage() {
       const { done, value } = await reader.read();
       if (done) break;
       reply += dec.decode(value, { stream: true });
-      const snapshot = reply;
+      const snapshot = cleanReply(reply);
       setChatMessages(chatId, (m) =>
         m.some((x) => x.id === replyId)
           ? m.map((x) => (x.id === replyId ? { ...x, content: snapshot } : x))
@@ -173,7 +188,97 @@ function ChatPage() {
       );
     }
     if (!reply.trim()) throw new Error("Mira went quiet… try sending that again.");
-    return { id: replyId, role: "assistant" as const, content: reply };
+    const clean = cleanReply(reply);
+    // Drop an empty text bubble when she only sent a tag.
+    setChatMessages(chatId, (m) =>
+      clean ? m.map((x) => (x.id === replyId ? { ...x, content: clean } : x)) : m.filter((x) => x.id !== replyId),
+    );
+    return { id: replyId, role: "assistant" as const, content: clean, raw: reply };
+  };
+
+  const avatarRef = async () => {
+    const blob = await (await fetch(mira)).blob();
+    return compressImage(new File([blob], "mira.jpg", { type: blob.type || "image/jpeg" }), 768, 0.9);
+  };
+
+  const sendDiary = async (chatId: string, d: DiaryJob) => {
+    await new Promise((r) => setTimeout(r, 700));
+    const img = await renderDiary(d.lines);
+    setChatMessages(chatId, (m) => [
+      ...m,
+      { id: uid(), role: "assistant", content: d.caption || "", images: [img], generated: true, media: { kind: "diary", style: "illustration", desc: d.lines.join(" / ") } },
+    ]);
+  };
+
+  const sendMedia = async (chatId: string, job: MediaJob) => {
+    setMediaRetry(null);
+    const roomish = ROOMISH.test(job.kind) || ROOMISH.test(job.desc);
+    // Same thing asked again: reuse her earlier picture unless he wants a new one.
+    if (!job.fresh) {
+      const prev = [...(chats.find((c) => c.id === chatId)?.messages ?? [])]
+        .reverse()
+        .find((x) => x.media && x.media.kind === job.kind && x.media.style === job.style && x.images?.length);
+      if (prev && !/selfie/i.test(job.kind)) {
+        setChatMessages(chatId, (m) => [
+          ...m,
+          { id: uid(), role: "assistant", content: job.caption, images: prev.images, generated: true, media: prev.media },
+        ]);
+        return;
+      }
+    }
+    if (quotaLeft(MAX_ASSETS_PER_24H) <= 0) {
+      setChatMessages(chatId, (m) => [...m, { id: uid(), role: "assistant", content: "aaj ke liye bas, kal aur dikhaungi 🙈" }]);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 900));
+    setDrawing(true);
+    try {
+      const refs: string[] = [];
+      const lines: string[] = [];
+      const look = job.style === "realistic"
+        ? "A photorealistic, natural-looking photograph, soft natural light, shot on a phone camera."
+        : "A soft, dreamy anime illustration in the same art style as the reference portrait, pastel pink and lavender tones.";
+      lines.push(look);
+      if (job.withMira) {
+        refs.push(await avatarRef().catch(() => ""));
+        lines.push(`The young woman in it is Mira from reference image ${refs.length}: keep her exact face, long wavy dark-brown hair, warm brown eyes and lavender flower hair clip${job.style === "realistic" ? ", rendered as a real person" : ""}.`);
+      }
+      const room = roomish ? await getWorldRef("room") : null;
+      if (room) {
+        refs.push(room);
+        lines.push(`The place is Mira's own bedroom from reference image ${refs.length}: keep the same layout, furniture, bed with teddy bear, fairy lights, desk, bookshelf and window curtains. Only the camera angle, time of day and weather may change.`);
+      } else if (roomish) {
+        lines.push("Mira's cosy bedroom: bed with a teddy bear, warm fairy lights, a small desk, a bookshelf, a window with soft curtains.");
+      }
+      lines.push(`Scene: ${job.desc}`);
+      lines.push("No text, letters or watermarks in the image. Wholesome.");
+      const r = await fetch("/api/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: lines.join("\n"), refs: refs.filter(Boolean) }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.image) throw new Error(j.error || "photo nahi ban paayi 🥺");
+      const small = await compressImage(j.image, 1024, 0.88).catch(() => j.image as string);
+      spendQuota();
+      if (roomish && !room && /room|bedroom/i.test(job.kind)) void setWorldRef("room", small);
+      setChatMessages(chatId, (m) => [
+        ...m,
+        { id: uid(), role: "assistant", content: job.caption, images: [small], generated: true, media: { kind: job.kind, style: job.style, desc: job.desc } },
+      ]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "photo nahi ban paayi 🥺");
+      setMediaRetry({ chatId, job: { ...job, fresh: true } });
+    } finally {
+      setDrawing(false);
+    }
+  };
+
+  const retryMedia = async () => {
+    if (!mediaRetry || busy) return;
+    setError(null);
+    setBusy(true);
+    try { await sendMedia(mediaRetry.chatId, mediaRetry.job); } finally { setBusy(false); }
   };
 
   const send = async () => {
@@ -201,29 +306,11 @@ function ChatPage() {
     );
     setBusy(true);
     try {
-      if (text && !imgs.length && wantsImage(text)) {
-        setDrawing(true);
-        const r = await fetch("/api/image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: text }),
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.image) throw new Error(j.error || "I couldn't make that picture 🥺");
-        const small = await compressImage(j.image, 1024, 0.88).catch(() => j.image as string);
-        setDrawing(false);
-        const imgMsg: Msg = { id: uid(), role: "assistant", content: "", images: [small], generated: true };
-        setChatMessages(chatId, (m) => [...m, imgMsg]);
-        const reply = await streamReply(chatId, history, "(You just drew that picture and sent it to him. Send a short sweet message with it.)");
-        setChatMessages(chatId, (m) => {
-          // Put her caption on the picture bubble.
-          const cap = m.find((x) => x.id === reply.id)?.content ?? "";
-          return m.filter((x) => x.id !== reply.id).map((x) => (x.id === imgMsg.id ? { ...x, content: cap } : x));
-        });
-      } else {
-        const reply = await streamReply(chatId, history);
-        void updateFacts([...history, reply], facts);
-      }
+      const reply = await streamReply(chatId, history);
+      void updateFacts([...history, reply], facts);
+      const { media, diary } = parseTags(reply.raw, text);
+      if (diary) await sendDiary(chatId, diary);
+      else if (media) await sendMedia(chatId, media);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -537,7 +624,7 @@ function ChatPage() {
           </div>
           <div className="min-w-0 flex-1">
             <h1 className="font-display text-lg leading-tight">Mira</h1>
-            <p className="text-xs text-muted-foreground">{drawing ? "drawing something for you…" : busy ? "typing…" : "online 💕"}</p>
+            <p className="text-xs text-muted-foreground">{drawing ? "Mira photo bhej rahi hai..." : busy ? "typing…" : "online 💕"}</p>
           </div>
           <button
             onClick={clearChat}
@@ -602,7 +689,7 @@ function ChatPage() {
               <div className="flex items-end gap-2">
                 <img src={mira} alt="" width={28} height={28} className="h-7 w-7 rounded-full object-cover" />
                 <div className="flex h-48 w-48 flex-col items-center justify-center gap-2 rounded-2xl rounded-bl-md bg-bubble-her text-sm text-muted-foreground animate-pulse">
-                  <ImageIcon className="h-8 w-8" /> drawing for you…
+                  <ImageIcon className="h-8 w-8" /> Mira photo bhej rahi hai...
                 </div>
               </div>
             )}
@@ -616,7 +703,16 @@ function ChatPage() {
                 </div>
               </div>
             )}
-            {error && <p className="mx-auto mt-2 rounded-xl bg-destructive/15 px-3 py-2 text-center text-sm text-destructive">{error}</p>}
+            {error && (
+              <div className="mx-auto mt-2 flex items-center gap-3 rounded-xl bg-destructive/15 px-3 py-2 text-center text-sm text-destructive">
+                <span>{error}</span>
+                {mediaRetry && !busy && (
+                  <button onClick={() => void retryMedia()} className="rounded-full bg-destructive px-3 py-1 text-xs font-semibold text-primary-foreground">
+                    Retry
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
