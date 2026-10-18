@@ -1,7 +1,7 @@
 import { CHAT_PROVIDERS } from "./ai-providers.config";
 import { callResponses, sseToText } from "./gateway.server";
 
-type Msg = { role: "user" | "assistant"; content: string; images?: string[] };
+type Msg = { role: "user" | "assistant"; content: string; images?: string[] | undefined };
 
 const ENDPOINTS = {
   gemini: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
