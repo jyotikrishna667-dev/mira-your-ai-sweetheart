@@ -1,3 +1,4 @@
+import { FACTS_EVERY_N_MESSAGES } from "@/lib/ai-providers.config";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -61,6 +62,7 @@ function ChatPage() {
   const [sidebar, setSidebar] = useState(false);
   const [query, setQuery] = useState("");
   const [viewer, setViewer] = useState<string | null>(null);
+  const [chatRetry, setChatRetry] = useState(false);
   const [mediaRetry, setMediaRetry] = useState<{ chatId: string; job: MediaJob } | null>(null);
   const [menu, setMenu] = useState<{ m: Msg; rect: DOMRect } | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -149,7 +151,7 @@ function ChatPage() {
   const streamReply = async (chatId: string, history: Msg[], extraNote?: string) => {
     const replyId = uid();
     let reply = "";
-    const payload = history.slice(-20).map(({ role, content, images, generated, media }) => ({
+    const payload = history.slice(-12).map(({ role, content, images, generated, media }) => ({
       role,
       content: media
         ? `${content}\n(sent him a ${media.kind} picture: ${media.kind === "diary" ? media.desc : media.desc.slice(0, 200)})`
@@ -172,7 +174,9 @@ function ChatPage() {
     });
     if (!res.ok || !res.body) {
       const j = await res.json().catch(() => ({}));
-      throw new Error(j.error || "Mira couldn't reply right now.");
+      const err = new Error(j.error || "Mira couldn't reply right now.");
+      if (j.allFailed) (err as Error & { allFailed?: boolean }).allFailed = true;
+      throw err;
     }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -282,6 +286,7 @@ function ChatPage() {
   };
 
   const send = async () => {
+    setChatRetry(false);
     const text = input.trim();
     if ((!text && !pending.length) || busy || !active) return;
     if (listening) recRef.current?.stop();
@@ -307,11 +312,18 @@ function ChatPage() {
     setBusy(true);
     try {
       const reply = await streamReply(chatId, history);
-      void updateFacts([...history, reply], facts);
+      if (history.filter((x) => x.role === "user").length % FACTS_EVERY_N_MESSAGES === 1) void updateFacts([...history, reply], facts);
       const { media, diary } = parseTags(reply.raw, text);
       if (diary) await sendDiary(chatId, diary);
       else if (media) await sendMedia(chatId, media);
     } catch (e) {
+      if ((e as { allFailed?: boolean })?.allFailed) {
+        // Keep the unsent text: take the message back into the box.
+        setChatMessages(chatId, (m) => m.filter((x) => x.id !== userMsg.id));
+        setInput(text);
+        setPending(imgs);
+        setChatRetry(true);
+      }
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setBusy(false);
@@ -706,6 +718,11 @@ function ChatPage() {
             {error && (
               <div className="mx-auto mt-2 flex items-center gap-3 rounded-xl bg-destructive/15 px-3 py-2 text-center text-sm text-destructive">
                 <span>{error}</span>
+                {chatRetry && !busy && (
+                  <button onClick={() => void send()} className="rounded-full bg-destructive px-3 py-1 text-xs font-semibold text-primary-foreground">
+                    Retry
+                  </button>
+                )}
                 {mediaRetry && !busy && (
                   <button onClick={() => void retryMedia()} className="rounded-full bg-destructive px-3 py-1 text-xs font-semibold text-primary-foreground">
                     Retry
