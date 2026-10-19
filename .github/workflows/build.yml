@@ -5,9 +5,6 @@ on:
   push:
     branches: [ main ]
 
-env:
-  APP_URL: "https://PASTE-YOUR-APP-ADDRESS-HERE"
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,38 +20,43 @@ jobs:
           distribution: zulu
           java-version: 21
 
-      - name: Check address
-        run: |
-          if echo "$APP_URL" | grep -q PASTE; then
-            echo "APP_URL is not set. Edit build.yml first."
-            exit 1
-          fi
+      - name: Install
+        run: npm install --legacy-peer-deps
 
-      - name: Create Android shell
+      - name: Build web (SPA)
         run: |
-          mkdir -p shell/www
-          cp native-shell/index.html shell/www/index.html
-          cd shell
-          npm init -y
-          npm install @capacitor/core @capacitor/cli @capacitor/android
-          printf '{"appId":"com.mira.sweetheart","appName":"Mira","webDir":"www","server":{"url":"%s","cleartext":false}}' "$APP_URL" > capacitor.config.json
+          npm run build
+          rm -rf dist
+          mkdir dist
+          if [ -d ".output/public" ]; then cp -r .output/public/. dist/; fi
+          if [ ! -f dist/index.html ] && [ -f dist/_shell.html ]; then cp dist/_shell.html dist/index.html; fi
+          ls -la dist
+          test -f dist/index.html
+
+      - name: Capacitor Android
+        run: |
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/app @capacitor/local-notifications --legacy-peer-deps
+          rm -f capacitor.config.ts capacitor.config.json
+          printf '{"appId":"com.jyoti.mira","appName":"Mira","webDir":"dist","server":{"url":"https://mira-my-sweet-chat.lovable.app","cleartext":false}}' > capacitor.config.json
+          rm -rf android
           npx cap add android
 
       - name: Android permissions
         run: |
-          cd shell
           MANIFEST=android/app/src/main/AndroidManifest.xml
-          sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' $MANIFEST
+          sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.VIBRATE" />\n    <application#' $MANIFEST
           grep -n "uses-permission" $MANIFEST
-          npx cap sync android
+
+      - name: Sync plugins
+        run: npx cap sync android
 
       - name: Build APK
         run: |
-          cd shell/android
+          cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
       - uses: actions/upload-artifact@v4
         with:
           name: Mira-App
-          path: shell/android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
