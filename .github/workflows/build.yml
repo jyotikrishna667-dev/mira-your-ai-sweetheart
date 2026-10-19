@@ -6,7 +6,6 @@ on:
     branches: [ main ]
 
 env:
-  APP_URL: "https://PASTE-YOUR-APP-ADDRESS-HERE"
   APP_NAME: "Mira Sweetheart"
   APP_ID: "com.mira.sweetheart"
 
@@ -14,60 +13,57 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: zulu
           java-version: 21
 
-      - name: Check address
+      - name: Install dependencies & Build React App
         run: |
-          if echo "$APP_URL" | grep -q PASTE; then
-            echo "APP_URL is not set. Edit build.yml first."
-            exit 1
-          fi
+          npm install --legacy-peer-deps || npm install
+          npm run build
 
-      - name: Create Android shell
+      - name: Setup Capacitor Android inside Repo
         run: |
-          mkdir -p shell/www shell/assets
-          cp native-shell/index.html shell/www/index.html
-          cd shell
-          npm init -y
-          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets
-          printf '{"appId":"%s","appName":"%s","webDir":"www","server":{"url":"%s","cleartext":false}}' "$APP_ID" "$APP_NAME" "$APP_URL" > capacitor.config.json
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets --save-dev --legacy-peer-deps
+          printf '{"appId":"%s","appName":"%s","webDir":"dist","server":{"androidScheme":"https"}}' "$APP_ID" "$APP_NAME" > capacitor.config.json
           npx cap add android
 
-      - name: App icon from Mira's photo
+      - name: Generate App Icon from Mira's photo
         run: |
           if [ -f src/assets/mira.jpg ]; then
+            mkdir -p assets
             which convert || sudo apt-get install -y imagemagick
-            convert src/assets/mira.jpg -resize 1024x1024! shell/assets/icon-only.png
-            cd shell
+            convert src/assets/mira.jpg -resize 1024x1024! assets/icon-only.png
             npx @capacitor/assets generate --android --iconBackgroundColor '#2a1226'
           else
             echo "No src/assets/mira.jpg found, keeping the default icon."
           fi
 
-      - name: Android permissions
+      - name: Add Android Permissions (Internet & Mic)
         run: |
-          cd shell
           MANIFEST=android/app/src/main/AndroidManifest.xml
-          sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' $MANIFEST
-          grep -n "uses-permission" $MANIFEST
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application android:usesCleartextTraffic="true"#' $MANIFEST
           npx cap sync android
 
-      - name: Build APK
+      - name: Build Debug APK
         run: |
-          cd shell/android
+          cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: Mira-Sweetheart-App
-          path: shell/android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          
