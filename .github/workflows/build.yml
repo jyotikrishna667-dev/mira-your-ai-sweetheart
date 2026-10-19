@@ -6,6 +6,7 @@ on:
     branches: [ main ]
 
 env:
+  APP_URL: "https://mira-your-ai-sweetheart.lovable.app"
   APP_NAME: "Mira Sweetheart"
   APP_ID: "com.mira.sweetheart"
 
@@ -27,37 +28,76 @@ jobs:
           distribution: zulu
           java-version: 21
 
-      - name: Install dependencies & Build React App
+      - name: Create Clean Native Android Shell
         run: |
-          npm install --legacy-peer-deps || npm install
-          npm run build
+          rm -rf shell
+          mkdir -p shell/www shell/assets
+          
+          # Clean loading page (No external redirect scripts, no CRUD sample!)
+          cat << 'EOF' > shell/www/index.html
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+              body { background: #2a1226; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+            </style>
+          </head>
+          <body>
+            <div>Loading Mira... ❤️</div>
+          </body>
+          </html>
+          EOF
 
-      - name: Setup Capacitor Android inside Repo
-        run: |
-          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets --save-dev --legacy-peer-deps
-          printf '{"appId":"%s","appName":"%s","webDir":"dist","server":{"androidScheme":"https"}}' "$APP_ID" "$APP_NAME" > capacitor.config.json
+          cd shell
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets
+
+          # Capacitor config with live URL and full internal navigation lock
+          cat << EOF > capacitor.config.json
+          {
+            "appId": "$APP_ID",
+            "appName": "$APP_NAME",
+            "webDir": "www",
+            "server": {
+              "url": "$APP_URL",
+              "cleartext": false,
+              "androidScheme": "https",
+              "allowNavigation": [
+                "mira-your-ai-sweetheart.lovable.app",
+                "*.lovable.app",
+                "*.lovable.dev",
+                "*.supabase.co",
+                "*"
+              ]
+            }
+          }
+          EOF
+
           npx cap add android
 
       - name: Generate App Icon from Mira's photo
         run: |
           if [ -f src/assets/mira.jpg ]; then
-            mkdir -p assets
             which convert || sudo apt-get install -y imagemagick
-            convert src/assets/mira.jpg -resize 1024x1024! assets/icon-only.png
+            convert src/assets/mira.jpg -resize 1024x1024! shell/assets/icon-only.png
+            cd shell
             npx @capacitor/assets generate --android --iconBackgroundColor '#2a1226'
           else
             echo "No src/assets/mira.jpg found, keeping the default icon."
           fi
 
-      - name: Add Android Permissions (Internet & Mic)
+      - name: Add Permissions & Sync
         run: |
+          cd shell
           MANIFEST=android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application android:usesCleartextTraffic="true"#' $MANIFEST
           npx cap sync android
 
       - name: Build Debug APK
         run: |
-          cd android
+          cd shell/android
           chmod +x gradlew
           ./gradlew assembleDebug
 
@@ -65,5 +105,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Mira-Sweetheart-App
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: shell/android/app/build/outputs/apk/debug/app-debug.apk
           
